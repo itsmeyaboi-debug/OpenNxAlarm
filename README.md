@@ -27,6 +27,10 @@ List of components needed (also see technical drawing below, this is just an eas
 
 -Arduino Nano (you can find that one yourself)
 
+-Any Cherry MX keys
+
+-1U keycap, 1,25U keycap
+
 -various 3MM nuts and bolts (I suggest getting one of those boxes with multiple sizes)
 
 <img width="3307" height="2339" alt="TECHNICALDRAWING_NIXIETUBECLOCK-1" src="https://github.com/user-attachments/assets/368a0962-d8b5-4e59-a6e5-ad0892251c98" />
