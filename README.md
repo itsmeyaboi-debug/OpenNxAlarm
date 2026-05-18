@@ -5,7 +5,9 @@ This is an opensource design for a nixie tube clock alarm using IN-12A tubes, ma
 Feel free to add or edit in any way you want, PCB design and parts included
 <img width="3840" height="2160" alt="Untitled Project (35)" src="https://github.com/user-attachments/assets/b9d8306b-d96c-4b7c-8ac4-1e4a0ea3eacb" />
 <img width="3840" height="2160" alt="Untitled Project (37)" src="https://github.com/user-attachments/assets/e4adbaaa-18d4-4c7f-9749-eaad924c3b5f" />
-I reccomend printing in PETG, due to heat constraints. Side panels can either be lasercut or printed.
+I recommend printing in PETG, due to heat constraints. Side panels can either be lasercut or printed.
+
+Full assembly files available over here: https://drive.google.com/file/d/1W3YwM5KsPBrGeHjA8JYMsT35AuqFwkeU/view?usp=sharing
 
 List of components needed (also see technical drawing below, this is just an easier list):
 
