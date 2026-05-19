@@ -1,0 +1,727 @@
+/*
+===========================================================
+4-TUBE NIXIE CLOCK
+===========================================================
+
+HARDWARE:
+--------------------------------
+RTC        : DS3231
+Buttons    : MCP23017
+Display    : 4 multiplexed nixie tubes
+Alarm      : D11 buzzer
+Status LED : D13
+
+IMPORTANT:
+--------------------------------
+- NO Serial usage
+- DO NOT use D0 or D1
+- Ghost prevention delay is CRITICAL
+- Multiplex timing must remain stable
+
+===========================================================
+LIBRARIES
+===========================================================
+*/
+
+#include <Wire.h>
+#include <RTClib.h>
+#include <Adafruit_MCP23X17.h>
+
+/*
+===========================================================
+RTC + MCP
+===========================================================
+*/
+
+RTC_DS3231 rtc;
+Adafruit_MCP23X17 mcp;
+
+/*
+===========================================================
+NIXIE DIGIT PINS
+===========================================================
+*/
+
+const int nixiePins[10] = {
+  2,    // 0
+  A0,   // 1
+  6,    // 2
+  7,    // 3
+  12,   // 4
+  9,    // 5
+  10,   // 6
+  5,    // 7
+  4,    // 8
+  3     // 9
+};
+
+/*
+===========================================================
+ROW PINS
+===========================================================
+*/
+
+const int rowPins[4] = {
+  A1,
+  A2,
+  A3,
+  8
+};
+
+/*
+===========================================================
+OUTPUTS
+===========================================================
+*/
+
+const int buzzerPin = 11;
+const int ledPin = 13;
+
+/*
+===========================================================
+BUTTONS (MCP23017 PORT B)
+===========================================================
+*/
+
+const int BTN1 = 8;   // B0
+const int BTN2 = 9;   // B1
+const int BTN3 = 10;  // B2
+const int BTN4 = 11;  // B3
+
+/*
+===========================================================
+TIMING
+===========================================================
+*/
+
+const int time_on = 3;
+
+unsigned long startupMillis;
+unsigned long lastDisplayActivity = 0;
+unsigned long lastAlarmToggle = 0;
+unsigned long lastLEDToggle = 0;
+
+/*
+===========================================================
+DISPLAY STATE
+===========================================================
+*/
+
+int displayDigits[4] = {0,0,0,0};
+
+bool displayEnabled = true;
+bool sleepMode = true;
+
+/*
+===========================================================
+ALARM DATA
+===========================================================
+*/
+
+struct AlarmData {
+  int hour;
+  int minute;
+  bool enabled;
+};
+
+AlarmData hisAlarm  = {7, 0, true};
+AlarmData herAlarm  = {7, 30, true};
+
+bool alarmActive = false;
+bool snoozeActive = false;
+
+int snoozeHour = 0;
+int snoozeMinute = 0;
+
+bool buzzerState = false;
+
+/*
+===========================================================
+SET MODES
+===========================================================
+*/
+
+enum SetMode {
+  MODE_NORMAL,
+  MODE_SET_HIS,
+  MODE_SET_HER,
+  MODE_SET_TIME
+};
+
+SetMode currentMode = MODE_NORMAL;
+
+/*
+===========================================================
+BUTTON TIMING
+===========================================================
+*/
+
+unsigned long btn1PressTime = 0;
+unsigned long btn4PressTime = 0;
+
+bool btn1Held3 = false;
+bool btn1Held10 = false;
+
+bool btn4Held3 = false;
+bool btn4Held10 = false;
+
+/*
+===========================================================
+SETUP
+===========================================================
+*/
+
+void setup() {
+
+  Wire.begin();
+
+  rtc.begin();
+
+  mcp.begin_I2C(0x20);
+
+  /*
+  ---------------------------------------------------------
+  MCP BUTTON INPUTS
+  ---------------------------------------------------------
+  */
+
+  mcp.pinMode(BTN1, INPUT_PULLUP);
+  mcp.pinMode(BTN2, INPUT_PULLUP);
+  mcp.pinMode(BTN3, INPUT_PULLUP);
+  mcp.pinMode(BTN4, INPUT_PULLUP);
+
+  /*
+  ---------------------------------------------------------
+  NIXIE PINS
+  ---------------------------------------------------------
+  */
+
+  for (int i = 0; i < 10; i++) {
+    pinMode(nixiePins[i], OUTPUT);
+  }
+
+  for (int i = 0; i < 4; i++) {
+    pinMode(rowPins[i], OUTPUT);
+  }
+
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(ledPin, OUTPUT);
+
+  startupMillis = millis();
+}
+
+/*
+===========================================================
+MAIN LOOP
+===========================================================
+*/
+
+void loop() {
+
+  handleButtons();
+
+  handleSleepMode();
+
+  handleAlarmLogic();
+
+  handleLED();
+
+  if (displayEnabled) {
+    updateDisplayTime();
+    multiplexDisplay();
+  }
+  else {
+    off_all();
+  }
+}
+
+/*
+===========================================================
+DISPLAY CURRENT TIME
+===========================================================
+*/
+
+void updateDisplayTime() {
+
+  DateTime now = rtc.now();
+
+  displayDigits[0] = now.hour() / 10;
+  displayDigits[1] = now.hour() % 10;
+
+  displayDigits[2] = now.minute() / 10;
+  displayDigits[3] = now.minute() % 10;
+}
+
+/*
+===========================================================
+MULTIPLEX DISPLAY
+===========================================================
+*/
+
+void multiplexDisplay() {
+
+  for (int i = 0; i < 4; i++) {
+
+    off_all();
+
+    on_number(i, displayDigits[i]);
+
+    delay(time_on);
+  }
+}
+
+/*
+===========================================================
+TURN ON SINGLE DIGIT
+===========================================================
+*/
+
+void on_number(int row, int digit) {
+
+  digitalWrite(rowPins[row], HIGH);
+
+  digitalWrite(nixiePins[digit], HIGH);
+}
+
+/*
+===========================================================
+TURN EVERYTHING OFF
+===========================================================
+*/
+
+void off_all() {
+
+  for (int i = 0; i < 10; i++) {
+    digitalWrite(nixiePins[i], LOW);
+  }
+
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(rowPins[i], LOW);
+  }
+
+  /*
+  IMPORTANT:
+  prevents ghosting
+  */
+
+  delayMicroseconds(420);
+}
+
+/*
+===========================================================
+BUTTON HANDLING
+===========================================================
+*/
+
+void handleButtons() {
+
+  bool b1 = !mcp.digitalRead(BTN1);
+  bool b2 = !mcp.digitalRead(BTN2);
+  bool b3 = !mcp.digitalRead(BTN3);
+  bool b4 = !mcp.digitalRead(BTN4);
+
+  /*
+  ---------------------------------------------------------
+  BUTTON 1
+  ---------------------------------------------------------
+  */
+
+  if (b1) {
+
+    if (btn1PressTime == 0) {
+      btn1PressTime = millis();
+    }
+
+    unsigned long held = millis() - btn1PressTime;
+
+    if (held > 3000 && !btn1Held3) {
+
+      currentMode = MODE_SET_HIS;
+
+      btn1Held3 = true;
+    }
+
+    if (held > 10000 && !btn1Held10) {
+
+      currentMode = MODE_SET_HER;
+
+      btn1Held10 = true;
+    }
+  }
+  else {
+
+    if (btn1PressTime > 0 && millis() - btn1PressTime < 3000) {
+
+      snoozeAlarm();
+    }
+
+    btn1PressTime = 0;
+
+    btn1Held3 = false;
+    btn1Held10 = false;
+  }
+
+  /*
+  ---------------------------------------------------------
+  BUTTON 4
+  ---------------------------------------------------------
+  */
+
+  if (b4) {
+
+    if (btn4PressTime == 0) {
+      btn4PressTime = millis();
+    }
+
+    unsigned long held = millis() - btn4PressTime;
+
+    if (held > 3000 && !btn4Held3) {
+
+      currentMode = MODE_SET_TIME;
+
+      btn4Held3 = true;
+    }
+
+    if (held > 10000 && !btn4Held10) {
+
+      sleepMode = !sleepMode;
+
+      btn4Held10 = true;
+    }
+  }
+  else {
+
+    if (btn4PressTime > 0 && millis() - btn4PressTime < 3000) {
+
+      wakeDisplayMinute();
+    }
+
+    btn4PressTime = 0;
+
+    btn4Held3 = false;
+    btn4Held10 = false;
+  }
+
+  /*
+  ---------------------------------------------------------
+  BUTTON 2 = MINUTES
+  ---------------------------------------------------------
+  */
+
+  if (b2) {
+
+    delay(150);
+
+    incrementMinutes();
+  }
+
+  /*
+  ---------------------------------------------------------
+  BUTTON 3 = HOURS
+  ---------------------------------------------------------
+  */
+
+  if (b3) {
+
+    delay(150);
+
+    incrementHours();
+  }
+
+  /*
+  ---------------------------------------------------------
+  BUTTON 2 + 3 = disable next alarm
+  ---------------------------------------------------------
+  */
+
+  if (b2 && b3) {
+
+    disableNextAlarm();
+
+    delay(500);
+  }
+}
+
+/*
+===========================================================
+INCREMENT MINUTES
+===========================================================
+*/
+
+void incrementMinutes() {
+
+  if (currentMode == MODE_SET_HIS) {
+
+    hisAlarm.minute++;
+
+    if (hisAlarm.minute >= 60) {
+      hisAlarm.minute = 0;
+    }
+  }
+
+  else if (currentMode == MODE_SET_HER) {
+
+    herAlarm.minute++;
+
+    if (herAlarm.minute >= 60) {
+      herAlarm.minute = 0;
+    }
+  }
+
+  else if (currentMode == MODE_SET_TIME) {
+
+    DateTime now = rtc.now();
+
+    rtc.adjust(DateTime(
+      now.year(),
+      now.month(),
+      now.day(),
+      now.hour(),
+      (now.minute() + 1) % 60,
+      0
+    ));
+  }
+}
+
+/*
+===========================================================
+INCREMENT HOURS
+===========================================================
+*/
+
+void incrementHours() {
+
+  if (currentMode == MODE_SET_HIS) {
+
+    hisAlarm.hour++;
+
+    if (hisAlarm.hour >= 24) {
+      hisAlarm.hour = 0;
+    }
+  }
+
+  else if (currentMode == MODE_SET_HER) {
+
+    herAlarm.hour++;
+
+    if (herAlarm.hour >= 24) {
+      herAlarm.hour = 0;
+    }
+  }
+
+  else if (currentMode == MODE_SET_TIME) {
+
+    DateTime now = rtc.now();
+
+    rtc.adjust(DateTime(
+      now.year(),
+      now.month(),
+      now.day(),
+      (now.hour() + 1) % 24,
+      now.minute(),
+      0
+    ));
+  }
+}
+
+/*
+===========================================================
+ALARM HANDLING
+===========================================================
+*/
+
+void handleAlarmLogic() {
+
+  DateTime now = rtc.now();
+
+  bool trigger = false;
+
+  if (hisAlarm.enabled &&
+      now.hour() == hisAlarm.hour &&
+      now.minute() == hisAlarm.minute) {
+
+    trigger = true;
+  }
+
+  if (herAlarm.enabled &&
+      now.hour() == herAlarm.hour &&
+      now.minute() == herAlarm.minute) {
+
+    trigger = true;
+  }
+
+  if (snoozeActive &&
+      now.hour() == snoozeHour &&
+      now.minute() == snoozeMinute) {
+
+    trigger = true;
+  }
+
+  alarmActive = trigger;
+
+  /*
+  ---------------------------------------------------------
+  BEEP PATTERN
+  0.5 sec ON
+  0.5 sec OFF
+  ---------------------------------------------------------
+  */
+
+  if (alarmActive) {
+
+    if (millis() - lastAlarmToggle >= 500) {
+
+      lastAlarmToggle = millis();
+
+      buzzerState = !buzzerState;
+
+      digitalWrite(buzzerPin, buzzerState);
+    }
+  }
+  else {
+
+    digitalWrite(buzzerPin, LOW);
+
+    buzzerState = false;
+  }
+}
+
+/*
+===========================================================
+SNOOZE
+===========================================================
+*/
+
+void snoozeAlarm() {
+
+  if (!alarmActive) return;
+
+  DateTime now = rtc.now();
+
+  int totalMinutes = now.hour() * 60 + now.minute() + 5;
+
+  snoozeHour = (totalMinutes / 60) % 24;
+  snoozeMinute = totalMinutes % 60;
+
+  snoozeActive = true;
+
+  alarmActive = false;
+}
+
+/*
+===========================================================
+DISABLE NEXT ALARM
+===========================================================
+*/
+
+void disableNextAlarm() {
+
+  DateTime now = rtc.now();
+
+  int nowMinutes = now.hour() * 60 + now.minute();
+
+  int hisMinutes = hisAlarm.hour * 60 + hisAlarm.minute;
+  int herMinutes = herAlarm.hour * 60 + herAlarm.minute;
+
+  if (hisMinutes <= herMinutes) {
+    hisAlarm.enabled = false;
+  }
+  else {
+    herAlarm.enabled = false;
+  }
+}
+
+/*
+===========================================================
+SLEEP MODE
+===========================================================
+*/
+
+void handleSleepMode() {
+
+  if (!sleepMode) {
+
+    displayEnabled = true;
+
+    return;
+  }
+
+  if (millis() - startupMillis < 60000) {
+
+    displayEnabled = true;
+
+    return;
+  }
+
+  if (millis() - lastDisplayActivity > 60000) {
+
+    displayEnabled = false;
+  }
+}
+
+/*
+===========================================================
+WAKE DISPLAY FOR 1 MINUTE
+===========================================================
+*/
+
+void wakeDisplayMinute() {
+
+  displayEnabled = true;
+
+  lastDisplayActivity = millis();
+}
+
+/*
+===========================================================
+LED STATUS
+===========================================================
+*/
+
+void handleLED() {
+
+  bool anyAlarm = hisAlarm.enabled || herAlarm.enabled;
+
+  if (!displayEnabled) {
+
+    digitalWrite(ledPin, LOW);
+
+    return;
+  }
+
+  if (!anyAlarm) {
+
+    digitalWrite(ledPin, HIGH);
+
+    return;
+  }
+
+  /*
+  ---------------------------------------------------------
+  blink 3x then solid
+  ---------------------------------------------------------
+  */
+
+  static int blinkCount = 0;
+  static bool blinking = true;
+
+  if (blinking) {
+
+    if (millis() - lastLEDToggle >= 500) {
+
+      lastLEDToggle = millis();
+
+      digitalWrite(ledPin, !digitalRead(ledPin));
+
+      blinkCount++;
+
+      if (blinkCount >= 6) {
+
+        blinking = false;
+
+        digitalWrite(ledPin, HIGH);
+      }
+    }
+  }
+}
+```
